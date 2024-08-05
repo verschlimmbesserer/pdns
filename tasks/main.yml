@@ -1,0 +1,62 @@
+---
+# tasks file for pdns
+
+- name: Disable the systemd-resolved service
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    state: stopped
+    enabled: false
+  register: disabled_resolver
+
+- name: Create new resolver file
+  ansible.builtin.copy:
+    src: resolv.conf
+    dest: /etc/resolv.conf
+    mode: "0644"
+    owner: root
+    group: root
+  register: new_resolv
+
+- name: Install pdns-server and pdns-backend
+  ansible.builtin.apt:
+    name: "{{ pdns_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+
+- name: Import pdns database schema
+  community.mysql.mysql_db:
+    login_user: "{{ pdns_db_connection_config['gmysql-user'] }}"
+    login_password: "{{ pdns_db_connection_config['gmysql-password'] }}"
+    state: import
+    name: "{{ pdns_database }}"
+    target: "/usr/share/pdns-backend-mysql/schema/{{ item }}"
+  loop: "{{ pdns_schema }}"
+  when: pdns_backend | lower == 'mysql' or pdns_backend | lower == 'mariadb' and new_resolv is changed
+
+- name: Remove default pdns bind config
+  ansible.builtin.file:
+    path: /etc/powerdns/pdns.d/bind.conf
+    state: absent
+
+- name: Deploy local backend conf
+  ansible.builtin.template:
+    src: pdns.local.conf.j2
+    dest: /etc/powerdns/pdns.d/pdns.local.gmysql.conf
+    mode: "0640"
+    owner: root
+    group: root
+  register: backend_deployed
+  notify:
+    - Restart pdns
+
+- name: Deploy pdns.conf file
+  ansible.builtin.template:
+    src: pdns.conf.j2
+    dest: /etc/powerdns/pdns.d/pdns.conf
+    mode: "0600"
+    owner: root
+    group: root
+  notify:
+    - Restart pdns
